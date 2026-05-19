@@ -1,0 +1,61 @@
+name: "🚀 Continuous Delivery (CD)"
+
+on:
+  workflow_run:
+    workflows: ["🩺 Continuous Integration (CI)"]
+    types:
+      - completed
+    branches:
+      - master
+
+env:
+  INFRA_REPO: "k5sha/k5sha-gitops"
+  MANIFEST_PATH: "manifests/tg-bot"   
+  MANIFEST_FILE: "deployment.yaml"    
+  REGISTRY: "ghcr.io"
+
+jobs:
+  update-manifest:
+    name: 🔄 Update Kubernetes Manifest
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    
+    steps:
+      - name: 📥 Checkout Infra Repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.INFRA_REPO }}
+          token: ${{ secrets.INFRA_REPO_TOKEN }}
+          path: infra-repo
+
+      - name: 🤖 Extract short SHA
+        id: vars
+        run: |
+          echo "sha_short=$(echo ${{ github.event.workflow_run.head_sha }} | cut -c1-7)" >> $GITHUB_OUTPUT
+
+      - name: 🔧 Update Image Tag in Deployment
+        run: |
+          cd infra-repo/${{ env.MANIFEST_PATH }}
+          
+          REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          IMAGE_FULL_PATH="${{ env.REGISTRY }}/${REPO_LOWER}"
+          NEW_TAG="${{ steps.vars.outputs.sha_short }}"
+          
+          echo "Updating image to: ${IMAGE_FULL_PATH}:${NEW_TAG}"
+          
+          sed -i "s|image: ${IMAGE_FULL_PATH}\(:.*\)\?|image: ${IMAGE_FULL_PATH}:${NEW_TAG}|g" ${{ env.MANIFEST_FILE }}
+
+      - name: 🚀 Commit and Push to Infra Repo
+        run: |
+          cd infra-repo
+          git config --global user.email "github-actions@github.com"
+          git config --global user.name "GitHub Actions"
+          
+          git add ${{ env.MANIFEST_PATH }}/${{ env.MANIFEST_FILE }}
+          
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "chore(cd): update image for ${{ github.event.repository.name }} to ${{ steps.vars.outputs.sha_short }}"
+            git push
+          fi
