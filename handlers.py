@@ -5,7 +5,8 @@ from aiogram import F, types, Router, Bot
 from aiogram.filters import Command
 from aiogram.utils.media_group import MediaGroupBuilder
 from aiogram.types import URLInputFile, BufferedInputFile
-from aiogram.enums import ChatMemberStatus
+from aiogram.enums import ChatMemberStatus, ChatAction
+from aiogram.exceptions import TelegramBadRequest
 
 from config import logger
 from services import download_tiktok, download_universal
@@ -57,13 +58,6 @@ async def handle_links(message: types.Message, bot: Bot):
     chat_type = message.chat.type
     
     logger.info(f"Processing message from user {user_id} in {chat_type} (chat: {chat_id})")
-    logger.debug(f"Message text: {message.text[:100]}...")
-    
-    # Перевіряємо чи повідомлення з групи
-    is_group = chat_type in ["group", "supergroup"]
-    
-    # Якщо це група, перевіряємо права бота
-    
     
     text = message.text
     
@@ -72,31 +66,35 @@ async def handle_links(message: types.Message, bot: Bot):
     universal_match = UNIVERSAL_RE.search(text) if not tiktok_match else None
     
     if not tiktok_match and not universal_match:
-        # Не наше посилання - ігноруємо
         return
+    
+    is_group = chat_type in ["group", "supergroup"]
     
     # TikTok
     if tiktok_match:
         tiktok_url = tiktok_match.group(1)
         logger.info(f"Processing TikTok URL: {tiktok_url}")
         
-        # Ставимо реакцію або статус друку
+        # Ставимо реакцію
         if not is_group:
             try:
                 await message.react(emoji="📥")
             except:
                 pass
         
+        # Індикатор завантаження - друкує
+        await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+        
         result = await download_tiktok(tiktok_url)
         if not result or not result[0]:
             logger.error(f"Failed to download TikTok content from {tiktok_url}")
-            if is_group:
-                await message.reply("💔 Не вдалося завантажити відео")
-            else:
+            if not is_group:
                 try:
                     await message.react(emoji="💔")
                 except:
                     await message.reply("💔")
+            else:
+                await message.reply("💔 Не вдалося завантажити відео")
             return
             
         media_content, audio_info, thumbnail_bytes, width, height = result
@@ -104,7 +102,9 @@ async def handle_links(message: types.Message, bot: Bot):
         try:
             # Слайд-шоу (карусель)
             if isinstance(media_content, MediaGroupBuilder):
-                logger.info(f"Sending slideshow with {len(media_content.media)} items")
+                # Індикатор завантаження фото
+                await bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_PHOTO)
+                logger.info(f"Sending slideshow")
                 await message.reply_media_group(media=media_content.build())
                 if not is_group:
                     try:
@@ -114,7 +114,9 @@ async def handle_links(message: types.Message, bot: Bot):
             
             # Відео
             elif isinstance(media_content, URLInputFile) or isinstance(media_content, str):
-                logger.info(f"Sending video (size: {width}x{height if width else 'unknown'})")
+                # Індикатор завантаження відео
+                await bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_VIDEO)
+                logger.info(f"Sending video")
                 kwargs = {
                     "video": media_content,
                     "supports_streaming": True
@@ -122,7 +124,6 @@ async def handle_links(message: types.Message, bot: Bot):
                 
                 if thumbnail_bytes:
                     kwargs["thumbnail"] = BufferedInputFile(thumbnail_bytes, filename="thumb.jpg")
-                    logger.info(f"Thumbnail size: {len(thumbnail_bytes)} bytes")
                 if width and height:
                     kwargs["width"] = width
                     kwargs["height"] = height
@@ -137,9 +138,9 @@ async def handle_links(message: types.Message, bot: Bot):
             
             # Аудіо для приватних чатів
             if not is_group and audio_info:
+                await bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_VOICE)
                 logger.info(f"Sending audio: {audio_info['title']}")
-                await asyncio.sleep(1)
-                await bot.send_chat_action(chat_id=message.chat.id, action="upload_voice")
+                await asyncio.sleep(0.5)
                 
                 audio_file = URLInputFile(
                     audio_info["url"], 
@@ -157,13 +158,13 @@ async def handle_links(message: types.Message, bot: Bot):
                     
         except Exception as e:
             logger.error(f"Error sending TikTok media: {e}", exc_info=True)
-            if is_group:
-                await message.reply("💔 Помилка при відправці")
-            else:
+            if not is_group:
                 try:
                     await message.react(emoji="💔")
                 except:
                     await message.reply("💔")
+            else:
+                await message.reply("💔 Помилка при відправці")
     
     # Instagram, YouTube та інші
     elif universal_match:
@@ -176,22 +177,26 @@ async def handle_links(message: types.Message, bot: Bot):
             except:
                 pass
         
+        # Індикатор завантаження
+        await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+        
         result = await download_universal(target_url)
         if not result or not result[0]:
             logger.error(f"Failed to download universal content from {target_url}")
-            if is_group:
-                await message.reply("💔 Не вдалося завантажити контент")
-            else:
+            if not is_group:
                 try:
                     await message.react(emoji="💔")
                 except:
                     await message.reply("💔")
+            else:
+                await message.reply("💔 Не вдалося завантажити контент")
             return
 
         media_content, thumbnail_bytes, width, height = result
         
         try:
             if isinstance(media_content, MediaGroupBuilder):
+                await bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_PHOTO)
                 logger.info(f"Sending universal slideshow")
                 await message.reply_media_group(media=media_content.build())
                 if not is_group:
@@ -214,6 +219,7 @@ async def handle_links(message: types.Message, bot: Bot):
                 logger.info(f"Sending universal {media_type}")
                 
                 if media_type == "video":
+                    await bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_VIDEO)
                     kwargs = {
                         "video": media_file,
                         "supports_streaming": True
@@ -227,6 +233,7 @@ async def handle_links(message: types.Message, bot: Bot):
                     
                     await message.reply_video(**kwargs)
                 elif media_type == "image":
+                    await bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_PHOTO)
                     await message.reply_photo(photo=media_file)
                 
                 if not is_group:
@@ -239,10 +246,10 @@ async def handle_links(message: types.Message, bot: Bot):
                     
         except Exception as e:
             logger.error(f"Error sending universal media: {e}", exc_info=True)
-            if is_group:
-                await message.reply("💔 Помилка при відправці")
-            else:
+            if not is_group:
                 try:
                     await message.react(emoji="💔")
                 except:
                     await message.reply("💔")
+            else:
+                await message.reply("💔 Помилка при відправці")
