@@ -21,14 +21,6 @@ UNIVERSAL_RE = re.compile(
     re.IGNORECASE
 )
 
-async def is_bot_admin(bot: Bot, chat_id: int) -> bool:
-    """Перевіряє чи бот є адміністратором групи"""
-    try:
-        chat_member = await bot.get_chat_member(chat_id, bot.id)
-        return chat_member.status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]
-    except Exception as e:
-        logger.error(f"Error checking admin status: {e}")
-        return False
 
 @router.message(Command("start"))
 async def cmd_start(message: types.Message):
@@ -42,7 +34,6 @@ async def cmd_start(message: types.Message):
         "<i>Бот працює безкоштовно</i>",
         parse_mode="HTML"
     )
-
 
 @router.message(Command("help"))
 async def cmd_help(message: types.Message):
@@ -72,12 +63,7 @@ async def handle_links(message: types.Message, bot: Bot):
     is_group = chat_type in ["group", "supergroup"]
     
     # Якщо це група, перевіряємо права бота
-    if is_group:
-        is_admin = await is_bot_admin(bot, chat_id)
-        if not is_admin:
-            logger.warning(f"Bot is not admin in group {chat_id}")
-            await message.reply("⚠️ Бот повинен бути адміністратором групи")
-            return
+    
     
     text = message.text
     
