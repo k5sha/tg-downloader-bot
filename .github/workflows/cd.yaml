@@ -43,7 +43,8 @@ jobs:
           
           echo "Updating image to: ${IMAGE_FULL_PATH}:${NEW_TAG}"
           
-          sed -i "s|image: ${IMAGE_FULL_PATH}\(:.*\)\?|image: ${IMAGE_FULL_PATH}:${NEW_TAG}|g" ${{ env.MANIFEST_FILE }}
+          sed -i "s|image: ${IMAGE_FULL_PATH}:.*|image: ${IMAGE_FULL_PATH}:${NEW_TAG}|g" ${{ env.MANIFEST_FILE }}
+
 
       - name: 🚀 Commit and Push to Infra Repo
         run: |
