@@ -5,9 +5,13 @@ import ssl
 import cv2
 import tempfile
 import os
+import shutil
+from pathlib import Path
 from typing import Tuple, Optional, Dict
+import yt_dlp
 from aiogram.utils.media_group import MediaGroupBuilder
 from aiogram.types import URLInputFile
+from config import MAX_VIDEO_SIZE_BYTES
 
 ssl_context = ssl.create_default_context()
 ssl_context.check_hostname = False
@@ -19,6 +23,7 @@ HEADERS = {
 
 _session: Optional[aiohttp.ClientSession] = None
 _cache: Dict[str, Tuple] = {}
+_ytdlp_semaphore = asyncio.Semaphore(1)
 
 async def get_session() -> aiohttp.ClientSession:
     global _session
@@ -32,7 +37,7 @@ async def get_session() -> aiohttp.ClientSession:
     return _session
 
 async def close_downloader():
-    global _session, _cache
+    global _session
     if _session and not _session.closed:
         await _session.close()
         _session = None
@@ -86,6 +91,38 @@ async def download_file(url: str, max_retries: int = 2) -> Optional[bytes]:
                 return None
             await asyncio.sleep(0.5)
     return None
+
+async def download_video(url: str) -> Optional[str]:
+    def _download():
+        directory = tempfile.mkdtemp(prefix="ytdlp_")
+        try:
+            with yt_dlp.YoutubeDL({
+                "format": "b[ext=mp4]/b",
+                "format_sort": ["res:720", f"filesize:{MAX_VIDEO_SIZE_BYTES}"],
+                "max_filesize": MAX_VIDEO_SIZE_BYTES,
+                "match_filter": yt_dlp.utils.match_filter_func("!is_live"),
+                "noplaylist": True,
+                "js_runtimes": {"deno": {}},
+                "socket_timeout": 20,
+                "retries": 2,
+                "fragment_retries": 2,
+                "cachedir": False,
+                "outtmpl": os.path.join(directory, "%(id)s.%(ext)s"),
+                "quiet": True,
+                "no_warnings": True,
+            }) as ydl:
+                ydl.extract_info(url, download=True)
+            path = next((p for p in Path(directory).iterdir() if p.is_file() and p.suffix != ".part"), None)
+            if path and path.stat().st_size > MAX_VIDEO_SIZE_BYTES:
+                raise ValueError("Downloaded video exceeds the configured size limit")
+            return str(path) if path else None
+        except Exception as e:
+            logging.error(f"yt-dlp error: {e}")
+            shutil.rmtree(directory, ignore_errors=True)
+            return None
+
+    async with _ytdlp_semaphore:
+        return await asyncio.to_thread(_download)
 
 async def download_tiktok(url: str) -> Tuple[Optional[any], Optional[Dict], Optional[bytes], Optional[int], Optional[int]]:
     cache_key = url
