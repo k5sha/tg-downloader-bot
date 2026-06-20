@@ -1,18 +1,46 @@
 import asyncio
+import os
 import re
+import shutil
 from aiogram import F, types, Router, Bot
 from aiogram.filters import Command
 from aiogram.utils.media_group import MediaGroupBuilder
-from aiogram.types import URLInputFile, BufferedInputFile
+from aiogram.types import URLInputFile, BufferedInputFile, FSInputFile
 from aiogram.enums import ChatAction
 from aiogram.exceptions import TelegramBadRequest
 
 from config import logger
-from services import download_tiktok
+from services import download_tiktok, download_video
 
 router = Router()
 
 TIKTOK_RE = re.compile(r'(https?://(?:vm|vt|www|m)\.tiktok\.com/[^\s]+)', re.IGNORECASE)
+URL_RE = re.compile(r'https?://[^\s<]+', re.IGNORECASE)
+
+
+async def handle_video(message: types.Message, bot: Bot):
+    match = URL_RE.search(message.text)
+    if not match:
+        return
+
+    await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.UPLOAD_VIDEO)
+    result = await download_video(match.group(0).rstrip(".,!?)]}"))
+    if not result:
+        await message.reply("Не вдалося завантажити відео або воно завелике")
+        return
+
+    path = result
+    try:
+        video = FSInputFile(path, filename=f"video{os.path.splitext(path)[1]}")
+        if path.lower().endswith(".mp4"):
+            await message.reply_video(video=video, supports_streaming=True)
+        else:
+            await message.reply_document(document=video)
+    except Exception as e:
+        logger.error(f"Video send error: {e}", exc_info=True)
+        await message.reply("Помилка при відправці відео")
+    finally:
+        shutil.rmtree(os.path.dirname(path), ignore_errors=True)
 
 
 @router.message(Command("start"))
@@ -50,7 +78,7 @@ async def cmd_help(message: types.Message):
 async def handle_tiktok(message: types.Message, bot: Bot):
     tiktok_match = TIKTOK_RE.search(message.text)
     if not tiktok_match:
-        return
+        return await handle_video(message, bot)
     
     user_id = message.from_user.id
     chat_id = message.chat.id

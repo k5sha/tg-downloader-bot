@@ -3,60 +3,60 @@ name: "🚀 Continuous Delivery (CD)"
 on:
   workflow_run:
     workflows: ["🩺 Continuous Integration (CI)"]
-    types:
-      - completed
-    branches:
-      - master
+    types: [completed]
+    branches: [master]
+
+permissions:
+  contents: read
 
 env:
-  INFRA_REPO: "k5sha/k5sha-gitops"
-  MANIFEST_PATH: "manifests/tg-bot"   
-  MANIFEST_FILE: "deployment.yaml"    
-  REGISTRY: "ghcr.io"
+  INFRA_REPO: k5sha/k5sha-gitops
+  MANIFEST_PATH: manifests/tg-bot
+  MANIFEST_FILE: deployment.yaml
+  REGISTRY: ghcr.io
 
 jobs:
   update-manifest:
     name: 🔄 Update Kubernetes Manifest
-    runs-on: ubuntu-latest
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
-    
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: tg-bot-production
+      cancel-in-progress: false
     steps:
-      - name: 📥 Checkout Infra Repository
+      - name: Checkout infrastructure repository
         uses: actions/checkout@v4
         with:
           repository: ${{ env.INFRA_REPO }}
           token: ${{ secrets.INFRA_REPO_TOKEN }}
           path: infra-repo
 
-      - name: 🤖 Extract short SHA
-        id: vars
+      - name: Update image tag
+        env:
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
-          echo "sha_short=$(echo ${{ github.event.workflow_run.head_sha }} | cut -c1-7)" >> $GITHUB_OUTPUT
+          cd "infra-repo/${MANIFEST_PATH}"
+          REPO_LOWER=$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')
+          IMAGE="${REGISTRY}/${REPO_LOWER}"
+          TAG="${HEAD_SHA:0:7}"
+          MATCHES=$(grep -Fc "image: ${IMAGE}:" "${MANIFEST_FILE}")
+          test "${MATCHES}" -eq 1
+          sed -i "s|image: ${IMAGE}:.*|image: ${IMAGE}:${TAG}|g" "${MANIFEST_FILE}"
+          grep -Fq "image: ${IMAGE}:${TAG}" "${MANIFEST_FILE}"
+          echo "Updated ${IMAGE}:${TAG}"
 
-      - name: 🔧 Update Image Tag in Deployment
-        run: |
-          cd infra-repo/${{ env.MANIFEST_PATH }}
-          
-          REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
-          IMAGE_FULL_PATH="${{ env.REGISTRY }}/${REPO_LOWER}"
-          NEW_TAG="${{ steps.vars.outputs.sha_short }}"
-          
-          echo "Updating image to: ${IMAGE_FULL_PATH}:${NEW_TAG}"
-          
-          sed -i "s|image: ${IMAGE_FULL_PATH}:.*|image: ${IMAGE_FULL_PATH}:${NEW_TAG}|g" ${{ env.MANIFEST_FILE }}
-
-
-      - name: 🚀 Commit and Push to Infra Repo
+      - name: Commit and push
+        env:
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           cd infra-repo
-          git config --global user.email "github-actions@github.com"
-          git config --global user.name "GitHub Actions"
-          
-          git add ${{ env.MANIFEST_PATH }}/${{ env.MANIFEST_FILE }}
-          
+          git config user.email "github-actions@github.com"
+          git config user.name "GitHub Actions"
+          git add "${MANIFEST_PATH}/${MANIFEST_FILE}"
           if git diff --staged --quiet; then
-            echo "No changes to commit"
+            echo "Manifest already uses this image"
           else
-            git commit -m "chore(cd): update image for ${{ github.event.repository.name }} to ${{ steps.vars.outputs.sha_short }}"
+            git commit -m "chore(cd): update tg-bot to ${HEAD_SHA:0:7}"
             git push
           fi
