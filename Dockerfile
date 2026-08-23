@@ -21,6 +21,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY --chown=appuser:appgroup . .
 
+EXPOSE 8080
+
 USER 1001
 
 CMD ["python", "main.py"]

@@ -1,66 +1,105 @@
-#!/usr/bin/env python3
-import asyncio
-import sys
 import logging
+import sys
+from aiohttp import web
+
 from aiogram import Bot, Dispatcher
-from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
 from aiogram.types import BotCommand
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
-from config import BOT_TOKEN
+from config import (
+    BASE_WEBHOOK_URL,
+    BOT_TOKEN,
+    WEB_SERVER_HOST,
+    WEB_SERVER_PORT,
+    WEBHOOK_PATH,
+    WEBHOOK_SECRET,
+)
 
-# Налаштування логування
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# Створюємо бота та диспетчер
 bot = Bot(
     token=BOT_TOKEN,
     default=DefaultBotProperties(parse_mode=ParseMode.HTML)
 )
 dp = Dispatcher()
 
-async def set_commands():
-    """Встановлює команди бота"""
+async def set_commands(bot: Bot):
+    """Sets default bot commands in Telegram UI"""
     commands = [
-        BotCommand(command="start", description="Запустити бота"),
-        BotCommand(command="help", description="Допомога"),
+        BotCommand(command="start", description="Start the bot"),
+        BotCommand(command="help", description="Get help"),
     ]
     await bot.set_my_commands(commands)
 
-async def on_startup():
-    logger.info("🚀 Bot starting...")
-    await set_commands()
+async def on_startup(bot: Bot):
+    """Executes on web server startup"""
+    logger.info("🚀 Bot starting webhook...")
+    bot_info = await bot.get_me()
+    logger.info(f"🤖 Bot: @{bot_info.username} (ID: {bot_info.id})")
+    
+    await set_commands(bot)
+    
+    webhook_url = f"{BASE_WEBHOOK_URL}{WEBHOOK_PATH}"
+    await bot.set_webhook(
+        url=webhook_url,
+        secret_token=WEBHOOK_SECRET,
+        allowed_updates=["message"],
+        drop_pending_updates=True,
+    )
+    logger.info(f"🔗 Webhook successfully set to {webhook_url}")
 
-async def on_shutdown():
+async def on_shutdown(bot: Bot):
+    """Executes on graceful shutdown (SIGTERM/SIGINT)"""
     logger.info("🛑 Bot shutting down...")
+    from services import close_downloader
+    
+    await close_downloader()
     await bot.session.close()
 
-async def main():
-    # Імпортуємо хендлери
+async def healthcheck(request: web.Request) -> web.Response:
+    """Endpoint for Kubernetes liveness and readiness probes"""
+    return web.Response(text="OK", status=200)
+
+def main():
     from handlers import router
-    from services import close_downloader
     
     dp.include_router(router)
     
+    # Register aiogram lifecycle hooks
     dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)
     
-    try:
-        bot_info = await bot.get_me()
-        logger.info(f"🤖 Bot: @{bot_info.username} (ID: {bot_info.id})")
-        logger.info(f"📊 Bot is polling...")
-        await dp.start_polling(bot, allowed_updates=["message"])
-    except KeyboardInterrupt:
-        logger.info("Stopped by user")
-    except Exception as e:
-        logger.error(f"Fatal error: {e}", exc_info=True)
-        sys.exit(1)
-    finally:
-        await close_downloader()
+    # Initialize aiohttp web application
+    app = web.Application()
+    
+    # Kubernetes health probe route
+    app.router.add_get("/healthz", healthcheck)
+    
+    # Register Telegram webhook handler with secret verification
+    webhook_requests_handler = SimpleRequestHandler(
+        dispatcher=dp,
+        bot=bot,
+        secret_token=WEBHOOK_SECRET,
+    )
+    webhook_requests_handler.register(app, path=WEBHOOK_PATH)
+    
+    # Integrate aiogram dispatcher with aiohttp app lifecycle
+    setup_application(app, dp, bot=bot)
+    
+    # Start web server
+    web.run_app(app, host=WEB_SERVER_HOST, port=WEB_SERVER_PORT)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        main()
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Bot stopped!")
+    except Exception as e:
+        logger.critical(f"Fatal error: {e}", exc_info=True)
+        sys.exit(1)
