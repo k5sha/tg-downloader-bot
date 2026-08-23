@@ -4,7 +4,6 @@ import re
 import shutil
 from aiogram import F, types, Router, Bot
 from aiogram.filters import Command
-from aiogram.utils.media_group import MediaGroupBuilder
 from aiogram.types import URLInputFile, BufferedInputFile, FSInputFile
 from aiogram.enums import ChatAction
 from aiogram.exceptions import TelegramBadRequest
@@ -91,7 +90,7 @@ async def handle_tiktok(message: types.Message, bot: Bot):
     if not is_group:
         try:
             await message.react(emoji="📥")
-        except:
+        except Exception:
             pass
     
     await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
@@ -105,25 +104,27 @@ async def handle_tiktok(message: types.Message, bot: Bot):
         else:
             try:
                 await message.react(emoji="💔")
-            except:
+            except Exception:
                 await message.reply("Не вдалося завантажити")
         return
     
     media_content, audio_info, thumbnail_bytes, width, height = result
     
     try:
-        if isinstance(media_content, MediaGroupBuilder):
+        if isinstance(media_content, list):
             await bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_PHOTO)
             logger.info(f"Sending slideshow to {user_id}")
-            await message.reply_media_group(media=media_content.build())
+            
+            for group in media_content:
+                await message.reply_media_group(media=group)
+                await asyncio.sleep(0.5) 
             
             if not is_group:
                 try:
                     await message.react(emoji="✅")
-                except:
+                except Exception:
                     pass
-        
-        elif isinstance(media_content, URLInputFile) or isinstance(media_content, str):
+        elif isinstance(media_content, (URLInputFile, FSInputFile, str)):
             await bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_VIDEO)
             logger.info(f"Sending video to {user_id}")
             
@@ -143,9 +144,8 @@ async def handle_tiktok(message: types.Message, bot: Bot):
             if not is_group:
                 try:
                     await message.react(emoji="✅")
-                except:
+                except Exception:
                     pass
-        
         if not is_group and audio_info:
             await bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_VOICE)
             logger.info(f"Sending audio: {audio_info['title']}")

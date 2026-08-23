@@ -8,10 +8,9 @@ import os
 import shutil
 import time
 from pathlib import Path
-from typing import Tuple, Optional, Dict
+from typing import Tuple, Optional, Dict, List
 import yt_dlp
-from aiogram.utils.media_group import MediaGroupBuilder
-from aiogram.types import URLInputFile
+from aiogram.types import URLInputFile, BufferedInputFile, InputMediaPhoto
 from config import MAX_VIDEO_SIZE_BYTES
 from metrics import (
     DOWNLOAD_REQUESTS_TOTAL,
@@ -25,17 +24,18 @@ ssl_context.check_hostname = False
 ssl_context.verify_mode = ssl.CERT_NONE
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 }
 
 _session: Optional[aiohttp.ClientSession] = None
 _cache: Dict[str, Tuple] = {}
 _ytdlp_semaphore = asyncio.Semaphore(1)
 
+
 async def get_session() -> aiohttp.ClientSession:
     global _session
     if _session is None or _session.closed:
-        connector = aiohttp.TCPConnector(ssl=ssl_context, limit=2, limit_per_host=1)
+        connector = aiohttp.TCPConnector(ssl=ssl_context, limit=10, limit_per_host=5)
         _session = aiohttp.ClientSession(
             connector=connector,
             headers=HEADERS,
@@ -43,12 +43,14 @@ async def get_session() -> aiohttp.ClientSession:
         )
     return _session
 
+
 async def close_downloader():
     global _session
     if _session and not _session.closed:
         await _session.close()
         _session = None
     _cache.clear()
+
 
 def get_video_info(video_bytes: bytes) -> Tuple[Optional[int], Optional[int], Optional[bytes]]:
     tmp_path = None
@@ -82,8 +84,9 @@ def get_video_info(video_bytes: bytes) -> Tuple[Optional[int], Optional[int], Op
         if tmp_path and os.path.exists(tmp_path):
             try:
                 os.unlink(tmp_path)
-            except:
+            except Exception:
                 pass
+
 
 async def download_file(url: str, max_retries: int = 2) -> Optional[bytes]:
     for attempt in range(max_retries):
@@ -93,11 +96,31 @@ async def download_file(url: str, max_retries: int = 2) -> Optional[bytes]:
                 if response.status != 200:
                     continue
                 return await response.read()
-        except:
+        except Exception:
             if attempt == max_retries - 1:
                 return None
             await asyncio.sleep(0.5)
     return None
+
+
+async def _download_photo_file(session: aiohttp.ClientSession, url: str, idx: int, max_retries: int = 2) -> Optional[Tuple[bytes, str]]:
+    """Downloads a single photo asynchronously into memory with retries."""
+    for attempt in range(max_retries):
+        try:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                if response.status == 200:
+                    data = await response.read()
+                    if data:
+                        return data, f"slide_{idx}.jpg"
+                logging.warning(f"Photo {idx} fetch status {response.status} on attempt {attempt + 1}: {url}")
+        except Exception as e:
+            logging.error(f"Failed to download image {idx} (attempt {attempt + 1}): {e}")
+        
+        if attempt < max_retries - 1:
+            await asyncio.sleep(0.3)
+            
+    return None
+
 
 async def download_video(url: str) -> Optional[str]:
     platform = "yt_dlp"
@@ -150,6 +173,7 @@ async def download_video(url: str) -> Optional[str]:
     finally:
         ACTIVE_DOWNLOADS.labels(platform=platform).dec()
 
+
 async def download_tiktok(url: str) -> Tuple[Optional[any], Optional[Dict], Optional[bytes], Optional[int], Optional[int]]:
     platform = "tiktok"
     cache_key = url
@@ -184,19 +208,33 @@ async def download_tiktok(url: str) -> Tuple[Optional[any], Optional[Dict], Opti
                 }
             
             if "images" in data and data["images"]:
-                images = data["images"]
-                video_versions = data.get("video_versions", [])
-                max_elements = min(len(images), 10)
+                image_urls = data["images"]
+                logging.info(f"TikWM returned {len(image_urls)} image URLs for {url}")
                 
-                media_group = MediaGroupBuilder()
-                for i in range(max_elements):
-                    if i < len(video_versions) and video_versions[i]:
-                        media_group.add_video(media=video_versions[i])
-                    else:
-                        media_group.add_photo(media=images[i])
+                tasks = [_download_photo_file(session, img_url, i) for i, img_url in enumerate(image_urls)]
+                downloaded_photos = await asyncio.gather(*tasks)
                 
-                result = (media_group, audio_info, None, None, None)
+                valid_photos = [p for p in downloaded_photos if p is not None]
+                logging.info(f"Successfully downloaded {len(valid_photos)} of {len(image_urls)} images")
+                
+                if not valid_photos:
+                    DOWNLOAD_REQUESTS_TOTAL.labels(platform=platform, status="error").inc()
+                    return None, None, None, None, None
+                
+                all_media = [
+                    InputMediaPhoto(media=BufferedInputFile(img_bytes, filename=filename))
+                    for img_bytes, filename in valid_photos
+                ]
+                
+                chunk_size = 10
+                media_groups = [all_media[i:i + chunk_size] for i in range(0, len(all_media), chunk_size)]
+                
+                total_bytes = sum(len(b_data) for b_data, _ in valid_photos)
+                
+                result = (media_groups, audio_info, None, None, None)
                 _cache[cache_key] = result
+                
+                DOWNLOADED_BYTES_TOTAL.labels(platform=platform).inc(total_bytes)
                 DOWNLOAD_REQUESTS_TOTAL.labels(platform=platform, status="success").inc()
                 DOWNLOAD_DURATION_SECONDS.labels(platform=platform).observe(time.perf_counter() - start_time)
                 return result
