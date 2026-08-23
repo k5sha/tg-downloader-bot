@@ -111,23 +111,19 @@ async def handle_tiktok(message: types.Message, bot: Bot):
     media_content, audio_info, thumbnail_bytes, width, height = result
     
     try:
-        # 1. SLIDESHOW PROCESSING (PHOTO LIST)
         if isinstance(media_content, list):
             await bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_PHOTO)
             logger.info(f"Sending slideshow to {user_id}")
             
-            # Send albums sequentially (10 photos per group)
             for group in media_content:
                 await message.reply_media_group(media=group)
-                await asyncio.sleep(0.5)  # Delay to avoid FloodWait
+                await asyncio.sleep(0.5) 
             
             if not is_group:
                 try:
                     await message.react(emoji="✅")
                 except Exception:
                     pass
-
-        # 2. VIDEO PROCESSING
         elif isinstance(media_content, (URLInputFile, FSInputFile, str)):
             await bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_VIDEO)
             logger.info(f"Sending video to {user_id}")
@@ -150,8 +146,6 @@ async def handle_tiktok(message: types.Message, bot: Bot):
                     await message.react(emoji="✅")
                 except Exception:
                     pass
-
-        # 3. AUDIO PROCESSING
         if not is_group and audio_info:
             await bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_VOICE)
             logger.info(f"Sending audio: {audio_info['title']}")

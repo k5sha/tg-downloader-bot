@@ -35,7 +35,6 @@ _ytdlp_semaphore = asyncio.Semaphore(1)
 async def get_session() -> aiohttp.ClientSession:
     global _session
     if _session is None or _session.closed:
-        # Increased connection limits for parallel downloading of photo batches
         connector = aiohttp.TCPConnector(ssl=ssl_context, limit=10, limit_per_host=5)
         _session = aiohttp.ClientSession(
             connector=connector,
@@ -208,12 +207,10 @@ async def download_tiktok(url: str) -> Tuple[Optional[any], Optional[Dict], Opti
                     "author": music_data.get("author", "Unknown")
                 }
             
-            # --- SLIDESHOW (PHOTOS) PROCESSING ---
             if "images" in data and data["images"]:
                 image_urls = data["images"]
                 logging.info(f"TikWM returned {len(image_urls)} image URLs for {url}")
                 
-                # 1. Download ALL images concurrently into memory
                 tasks = [_download_photo_file(session, img_url, i) for i, img_url in enumerate(image_urls)]
                 downloaded_photos = await asyncio.gather(*tasks)
                 
@@ -224,13 +221,11 @@ async def download_tiktok(url: str) -> Tuple[Optional[any], Optional[Dict], Opti
                     DOWNLOAD_REQUESTS_TOTAL.labels(platform=platform, status="error").inc()
                     return None, None, None, None, None
                 
-                # 2. Build a unified list of InputMediaPhoto objects (with in-memory file bytes)
                 all_media = [
                     InputMediaPhoto(media=BufferedInputFile(img_bytes, filename=filename))
                     for img_bytes, filename in valid_photos
                 ]
                 
-                # 3. Split the list into chunks of 10 items (Telegram API limit per media group)
                 chunk_size = 10
                 media_groups = [all_media[i:i + chunk_size] for i in range(0, len(all_media), chunk_size)]
                 
