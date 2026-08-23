@@ -6,12 +6,19 @@ import cv2
 import tempfile
 import os
 import shutil
+import time
 from pathlib import Path
 from typing import Tuple, Optional, Dict
 import yt_dlp
 from aiogram.utils.media_group import MediaGroupBuilder
 from aiogram.types import URLInputFile
 from config import MAX_VIDEO_SIZE_BYTES
+from metrics import (
+    DOWNLOAD_REQUESTS_TOTAL,
+    DOWNLOAD_DURATION_SECONDS,
+    DOWNLOADED_BYTES_TOTAL,
+    ACTIVE_DOWNLOADS,
+)
 
 ssl_context = ssl.create_default_context()
 ssl_context.check_hostname = False
@@ -93,6 +100,10 @@ async def download_file(url: str, max_retries: int = 2) -> Optional[bytes]:
     return None
 
 async def download_video(url: str) -> Optional[str]:
+    platform = "yt_dlp"
+    ACTIVE_DOWNLOADS.labels(platform=platform).inc()
+    start_time = time.perf_counter()
+
     def _download():
         directory = tempfile.mkdtemp(prefix="ytdlp_")
         try:
@@ -121,27 +132,48 @@ async def download_video(url: str) -> Optional[str]:
             shutil.rmtree(directory, ignore_errors=True)
             return None
 
-    async with _ytdlp_semaphore:
-        return await asyncio.to_thread(_download)
+    try:
+        async with _ytdlp_semaphore:
+            file_path = await asyncio.to_thread(_download)
+
+        duration = time.perf_counter() - start_time
+        DOWNLOAD_DURATION_SECONDS.labels(platform=platform).observe(duration)
+
+        if file_path and os.path.exists(file_path):
+            size_bytes = os.path.getsize(file_path)
+            DOWNLOADED_BYTES_TOTAL.labels(platform=platform).inc(size_bytes)
+            DOWNLOAD_REQUESTS_TOTAL.labels(platform=platform, status="success").inc()
+            return file_path
+        else:
+            DOWNLOAD_REQUESTS_TOTAL.labels(platform=platform, status="error").inc()
+            return None
+    finally:
+        ACTIVE_DOWNLOADS.labels(platform=platform).dec()
 
 async def download_tiktok(url: str) -> Tuple[Optional[any], Optional[Dict], Optional[bytes], Optional[int], Optional[int]]:
+    platform = "tiktok"
     cache_key = url
     if cache_key in _cache:
+        DOWNLOAD_REQUESTS_TOTAL.labels(platform=platform, status="cached").inc()
         return _cache[cache_key]
     
+    ACTIVE_DOWNLOADS.labels(platform=platform).inc()
+    start_time = time.perf_counter()
     api_url = f"https://www.tikwm.com/api/?url={url}"
+    
     try:
         session = await get_session()
         async with session.get(api_url) as response:
             if response.status != 200:
+                DOWNLOAD_REQUESTS_TOTAL.labels(platform=platform, status="error").inc()
                 return None, None, None, None, None
             
             json_data = await response.json()
             if json_data.get("code") != 0 or "data" not in json_data:
+                DOWNLOAD_REQUESTS_TOTAL.labels(platform=platform, status="error").inc()
                 return None, None, None, None, None
             
             data = json_data["data"]
-            
             music_data = data.get("music_info", {})
             audio_info = None
             if data.get("music"):
@@ -165,12 +197,15 @@ async def download_tiktok(url: str) -> Tuple[Optional[any], Optional[Dict], Opti
                 
                 result = (media_group, audio_info, None, None, None)
                 _cache[cache_key] = result
+                DOWNLOAD_REQUESTS_TOTAL.labels(platform=platform, status="success").inc()
+                DOWNLOAD_DURATION_SECONDS.labels(platform=platform).observe(time.perf_counter() - start_time)
                 return result
             
             if "play" in data and data["play"]:
                 video_url = data["play"]
                 video_bytes = await download_file(video_url)
                 if not video_bytes:
+                    DOWNLOAD_REQUESTS_TOTAL.labels(platform=platform, status="error").inc()
                     return None, None, None, None, None
                 
                 width, height, thumbnail_bytes = get_video_info(video_bytes)
@@ -181,9 +216,16 @@ async def download_tiktok(url: str) -> Tuple[Optional[any], Optional[Dict], Opti
                 video_file = URLInputFile(video_url, filename="video.mp4", headers=HEADERS)
                 result = (video_file, audio_info, thumbnail_bytes, width, height)
                 _cache[cache_key] = result
+                
+                DOWNLOADED_BYTES_TOTAL.labels(platform=platform).inc(len(video_bytes))
+                DOWNLOAD_REQUESTS_TOTAL.labels(platform=platform, status="success").inc()
+                DOWNLOAD_DURATION_SECONDS.labels(platform=platform).observe(time.perf_counter() - start_time)
                 return result
-                    
+
     except Exception as e:
         logging.error(f"TikTok error: {e}")
+        DOWNLOAD_REQUESTS_TOTAL.labels(platform=platform, status="error").inc()
+    finally:
+        ACTIVE_DOWNLOADS.labels(platform=platform).dec()
     
     return None, None, None, None, None
