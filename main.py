@@ -1,6 +1,7 @@
 import logging
 import sys
 from aiohttp import web
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -66,6 +67,13 @@ async def healthcheck(request: web.Request) -> web.Response:
     """Endpoint for Kubernetes liveness and readiness probes"""
     return web.Response(text="OK", status=200)
 
+async def metrics_handler(request: web.Request) -> web.Response:
+    """Prometheus metrics endpoint"""
+    return web.Response(
+        body=generate_latest(),
+        headers={"Content-Type": CONTENT_TYPE_LATEST}
+    )
+
 def main():
     from handlers import router
     
@@ -80,6 +88,7 @@ def main():
     
     # Kubernetes health probe route
     app.router.add_get("/healthz", healthcheck)
+    app.router.add_get("/metrics", metrics_handler)
     
     # Register Telegram webhook handler with secret verification
     webhook_requests_handler = SimpleRequestHandler(
