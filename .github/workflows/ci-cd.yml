@@ -1,0 +1,37 @@
+name: "🚀 Pipeline (CI/CD)"
+
+on:
+  push:
+    branches: ["master"]
+    paths-ignore:
+      - "**.md"
+      - "LICENSE"
+  pull_request:
+    branches: ["master"]
+    paths-ignore:
+      - "**.md"
+      - "LICENSE"
+  workflow_dispatch:
+
+jobs:
+  ci:
+    name: "CI ⚙️"
+    uses: k5sha/workflow-ci-cd-templates/.github/workflows/ci-python.yml@master
+    permissions:
+      contents: read
+      packages: write
+    with:
+      python_version: "3.11"
+      run_lint: true
+
+  cd:
+    name: "CD 🔨"
+    needs: ci
+    if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
+    uses: k5sha/workflow-ci-cd-templates/.github/workflows/cd-gitops.yml@master
+    with:
+      manifest_path: "manifests/tg-bot"
+      manifest_file: "deployment.yaml"
+      image_tag: ${{ needs.ci.outputs.short_sha }}
+    secrets:
+      INFRA_REPO_TOKEN: ${{ secrets.INFRA_REPO_TOKEN }}
