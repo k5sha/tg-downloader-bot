@@ -7,7 +7,7 @@
 
 # Telegram Downloader Bot (`tg-downloader-bot`)
 
-![CI/CD Pipeline](https://img.shields.io/github/actions/workflow/status/k5sha/tg-downloader-bot/ci.yaml?style=for-the-badge&logo=githubactions&logoColor=white&label=CI%2FCD)
+![CI/CD Pipeline](https://img.shields.io/github/actions/workflow/status/k5sha/tg-downloader-bot/ci-cd.yml?style=for-the-badge&logo=githubactions&logoColor=white&label=CI%2FCD)
 [![Python Version](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![aiogram](https://img.shields.io/badge/aiogram-3.x-2CA5E0?style=for-the-badge&logo=telegram&logoColor=white)](https://docs.aiogram.dev/)
 [![Kubernetes](https://img.shields.io/badge/Orchestration-K3s-326CE5?style=for-the-badge&logo=kubernetes&logoColor=white)](https://k3s.io/)
